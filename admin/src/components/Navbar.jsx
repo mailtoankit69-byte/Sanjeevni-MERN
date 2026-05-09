@@ -19,7 +19,7 @@ const Navbar = () => {
   }
 
   const goToUserPanel = () => {
-    window.location.href = 'https://Sanjeevi-roan.vercel.app/'
+    window.location.href = 'https://sanjeevni-patient.vercel.app/'
   }
 
   const isOnDashboard =

@@ -1,0 +1,38 @@
+version: 0.0
+os: linux
+files:
+  - source: backend/
+    destination: /opt/Sanjeevi/backend
+    overwrite: true
+  - source: scripts/codedeploy/
+    destination: /opt/Sanjeevi/scripts
+    overwrite: true
+
+permissions:
+  - object: /opt/Sanjeevi
+    owner: ec2-user
+    group: ec2-user
+    type:
+      - directory
+      - file
+
+hooks:
+  BeforeInstall:
+    - location: scripts/codedeploy/before-install.sh
+      timeout: 60
+      runas: root
+
+  AfterInstall:
+    - location: scripts/codedeploy/after-install.sh
+      timeout: 120
+      runas: ec2-user
+
+  ApplicationStart:
+    - location: scripts/codedeploy/application-start.sh
+      timeout: 60
+      runas: root
+
+  ValidateService:
+    - location: scripts/codedeploy/validate-service.sh
+      timeout: 60
+      runas: ec2-user

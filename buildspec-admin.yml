@@ -1,0 +1,39 @@
+version: 0.2
+
+env:
+  shell: bash
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+
+  pre_build:
+    commands:
+      - echo "Admin build started on $(date)"
+      - cd admin
+      - npm ci
+
+  build:
+    commands:
+      - echo "VITE_BACKEND_URL=$VITE_BACKEND_URL" > .env.production
+      - npm run build
+
+  post_build:
+    commands:
+      - |
+        if [ "$CODEBUILD_BUILD_SUCCEEDING" = "0" ]; then
+          echo "Build failed, skipping deploy"
+          exit 1
+        fi
+      - echo "Deploying admin to S3..."
+      - aws s3 sync dist/ "s3://${ADMIN_BUCKET}/" --delete --cache-control "public,max-age=31536000,immutable" --exclude "index.html"
+      - aws s3 cp dist/index.html "s3://${ADMIN_BUCKET}/index.html" --cache-control "no-cache,no-store,must-revalidate"
+      - echo "Invalidating CloudFront cache..."
+      - aws cloudfront create-invalidation --distribution-id "${ADMIN_DISTRIBUTION_ID}" --paths "/*"
+      - echo "Admin deploy completed on $(date)"
+
+artifacts:
+  files:
+    - admin/dist/**/*
+  base-directory: .

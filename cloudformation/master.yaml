@@ -1,0 +1,237 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Sanjeevi - Master Stack: Orchestrates all nested stacks for 3-tier AWS deployment'
+
+# ============================================================
+# DEPLOYMENT ORDER (stacks depend on each other):
+#
+#   1. 01-network.yaml     → VPC, subnets, IGW, NAT GW
+#   2. 02-security.yaml    → Security groups, IAM roles
+#   3. 03-database.yaml    → DocumentDB, Secrets Manager
+#   4. 04-storage.yaml     → S3, CloudFront, WAF
+#   5. 05-compute.yaml     → ALB, Launch Template, ASG
+#   6. 06-monitoring.yaml  → CloudWatch, SNS
+#   7. 07-cicd.yaml        → CodePipeline, CodeBuild, CodeDeploy
+#   8. 08-dns.yaml         → Route 53 records
+#
+# Deploy individual stacks in order using the AWS CLI:
+#
+#   aws cloudformation deploy \
+#     --template-file cloudformation/01-network.yaml \
+#     --stack-name production-Sanjeevi-network \
+#     --parameter-overrides EnvironmentName=production \
+#     --capabilities CAPABILITY_NAMED_IAM
+#
+# Or use this master stack to deploy everything at once
+# (requires uploading nested templates to S3 first):
+#
+#   # 1. Upload templates to S3
+#   aws s3 sync cloudformation/ s3://YOUR-TEMPLATE-BUCKET/Sanjeevi/
+#
+#   # 2. Deploy master stack
+#   aws cloudformation deploy \
+#     --template-file cloudformation/master.yaml \
+#     --stack-name production-Sanjeevi \
+#     --parameter-overrides \
+#         EnvironmentName=production \
+#         DomainName=Sanjeevi.com \
+#         HostedZoneId=Z0123456789ABC \
+#         AcmCertificateArn=arn:aws:acm:us-east-1:123456789:certificate/xxx \
+#         GitHubConnectionArn=arn:aws:codestar-connections:region:account:connection/xxx \
+#         GitHubOwner=your-github-username \
+#         AlertEmail=ops@Sanjeevi.com \
+#         TemplateBucketUrl=https://YOUR-TEMPLATE-BUCKET.s3.amazonaws.com/Sanjeevi \
+#     --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND
+#
+# NOTE: The storage stack (04-storage.yaml) including WAF + CloudFront
+# must run in us-east-1. If your backend runs in another region, deploy
+# 04-storage.yaml and 08-dns.yaml (CloudFront records) separately in
+# us-east-1, or use this master stack entirely from us-east-1.
+# ============================================================
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: production
+    AllowedValues: [production, staging]
+
+  TemplateBucketUrl:
+    Type: String
+    Description: S3 HTTPS URL where nested templates are stored (e.g., https://bucket.s3.amazonaws.com/prefix)
+
+  # Network
+  VpcCIDR:
+    Type: String
+    Default: 10.0.0.0/16
+
+  # Domain & DNS
+  DomainName:
+    Type: String
+    Description: Root domain (e.g., Sanjeevi.com)
+
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Description: Route 53 hosted zone ID
+
+  FrontendSubdomain:
+    Type: String
+    Default: app
+
+  AdminSubdomain:
+    Type: String
+    Default: admin
+
+  ApiSubdomain:
+    Type: String
+    Default: api
+
+  AcmCertificateArn:
+    Type: String
+    Description: ACM certificate ARN in us-east-1 (for CloudFront)
+
+  # Database
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.medium
+
+  # Compute
+  InstanceType:
+    Type: String
+    Default: t3.small
+
+  MinInstances:
+    Type: Number
+    Default: 2
+
+  MaxInstances:
+    Type: Number
+    Default: 6
+
+  # Monitoring
+  AlertEmail:
+    Type: String
+
+  # CI/CD
+  GitHubConnectionArn:
+    Type: String
+    Description: CodeStar Connections ARN for GitHub
+
+  GitHubOwner:
+    Type: String
+
+  GitHubRepo:
+    Type: String
+    Default: Sanjeevi
+
+  GitHubBranch:
+    Type: String
+    Default: master
+
+Resources:
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub '${TemplateBucketUrl}/01-network.yaml'
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        VpcCIDR: !Ref VpcCIDR
+
+  SecurityStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: NetworkStack
+    Properties:
+      TemplateURL: !Sub '${TemplateBucketUrl}/02-security.yaml'
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+
+  DatabaseStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: SecurityStack
+    Properties:
+      TemplateURL: !Sub '${TemplateBucketUrl}/03-database.yaml'
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        DBInstanceClass: !Ref DBInstanceClass
+
+  StorageStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: SecurityStack
+    Properties:
+      TemplateURL: !Sub '${TemplateBucketUrl}/04-storage.yaml'
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        DomainName: !Ref DomainName
+        FrontendSubdomain: !Ref FrontendSubdomain
+        AdminSubdomain: !Ref AdminSubdomain
+        AcmCertificateArn: !Ref AcmCertificateArn
+
+  ComputeStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - SecurityStack
+      - DatabaseStack
+    Properties:
+      TemplateURL: !Sub '${TemplateBucketUrl}/05-compute.yaml'
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        DomainName: !Ref DomainName
+        ApiSubdomain: !Ref ApiSubdomain
+        InstanceType: !Ref InstanceType
+        MinInstances: !Ref MinInstances
+        MaxInstances: !Ref MaxInstances
+        HostedZoneId: !Ref HostedZoneId
+
+  MonitoringStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: ComputeStack
+    Properties:
+      TemplateURL: !Sub '${TemplateBucketUrl}/06-monitoring.yaml'
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AlertEmail: !Ref AlertEmail
+
+  CiCdStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - ComputeStack
+      - StorageStack
+    Properties:
+      TemplateURL: !Sub '${TemplateBucketUrl}/07-cicd.yaml'
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        GitHubConnectionArn: !Ref GitHubConnectionArn
+        GitHubOwner: !Ref GitHubOwner
+        GitHubRepo: !Ref GitHubRepo
+        GitHubBranch: !Ref GitHubBranch
+        DomainName: !Ref DomainName
+        ApiSubdomain: !Ref ApiSubdomain
+
+  DnsStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - ComputeStack
+      - StorageStack
+    Properties:
+      TemplateURL: !Sub '${TemplateBucketUrl}/08-dns.yaml'
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        DomainName: !Ref DomainName
+        HostedZoneId: !Ref HostedZoneId
+        FrontendSubdomain: !Ref FrontendSubdomain
+        AdminSubdomain: !Ref AdminSubdomain
+        ApiSubdomain: !Ref ApiSubdomain
+
+Outputs:
+  FrontendUrl:
+    Value: !Sub 'https://${FrontendSubdomain}.${DomainName}'
+
+  AdminUrl:
+    Value: !Sub 'https://${AdminSubdomain}.${DomainName}'
+
+  ApiUrl:
+    Value: !Sub 'https://${ApiSubdomain}.${DomainName}'
+
+  VpcId:
+    Value: !GetAtt NetworkStack.Outputs.VpcId
+
+  DocumentDBEndpoint:
+    Value: !GetAtt DatabaseStack.Outputs.DocumentDBClusterEndpoint

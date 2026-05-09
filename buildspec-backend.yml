@@ -1,0 +1,19 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+
+  build:
+    commands:
+      - echo "Packaging backend for CodeDeploy..."
+      - echo "Backend build completed on $(date)"
+
+artifacts:
+  files:
+    - backend/**/*
+    - scripts/codedeploy/**/*
+    - appspec.yml
+  base-directory: .
+  discard-paths: no
